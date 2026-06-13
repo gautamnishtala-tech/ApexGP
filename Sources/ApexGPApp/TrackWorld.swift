@@ -18,6 +18,7 @@ enum TrackWorld {
 
         root.addChildNode(grassNode(geo))
         root.addChildNode(roadNode(geo))
+        root.addChildNode(edgeLinesNode(geo))
         if let kerbs = kerbsNode(geo) { root.addChildNode(kerbs) }
         root.addChildNode(barriersNode(geo))
         root.addChildNode(startFinishNode(track))
@@ -37,6 +38,40 @@ enum TrackWorld {
         let node = SCNNode(geometry: SceneGeometry.geometry(from: mesh,
                                                             material: SceneGeometry.roadMaterial()))
         node.name = "road"
+        node.castsShadow = false
+        return node
+    }
+
+    // MARK: Lane edge lines
+
+    /// Crisp white lines running just inside each road edge around the whole
+    /// lap — the marking that makes the grey track read as racing "lanes".
+    /// Two thin closed strips, merged into one geometry, lifted a hair above
+    /// the asphalt so they never z-fight the road.
+    private static func edgeLinesNode(_ geo: TrackGeometry) -> SCNNode {
+        let lineWidth: Float = 0.18
+        let lift: Float = 0.015
+        var leftOuter: [SIMD3<Float>] = [], leftInner: [SIMD3<Float>] = []
+        var rightInner: [SIMD3<Float>] = [], rightOuter: [SIMD3<Float>] = []
+        var up: [SIMD3<Float>] = []
+        for sample in geo.samples {
+            let u = sample.up
+            up.append(u)
+            // Left line hugs the left edge and runs inward toward the centerline.
+            leftOuter.append(sample.leftEdge + u * lift)
+            leftInner.append(sample.leftEdge + sample.right * lineWidth + u * lift)
+            // Right line hugs the right edge and runs inward (-right).
+            rightInner.append(sample.rightEdge - sample.right * lineWidth + u * lift)
+            rightOuter.append(sample.rightEdge + u * lift)
+        }
+        var merged = MeshData()
+        merged.append(RibbonMesh.closedStrip(left: leftOuter, right: leftInner, up: up, uScale: 0))
+        merged.append(RibbonMesh.closedStrip(left: rightInner, right: rightOuter, up: up, uScale: 0))
+        let mat = SCNMaterial()
+        mat.diffuse.contents = NSColor.white
+        mat.isDoubleSided = true
+        let node = SCNNode(geometry: SceneGeometry.geometry(from: merged, material: mat))
+        node.name = "edgeLines"
         node.castsShadow = false
         return node
     }
@@ -180,8 +215,8 @@ enum TrackWorld {
         plane.firstMaterial = mat
         let node = SCNNode(geometry: plane)
         node.name = "startFinishLine"
-        node.simdPosition = line.position + line.up * 0.05
-        node.simdOrientation = orientation(forward: line.forward, up: line.up)
+        node.simdPosition = line.position + line.up * 0.02
+        node.simdOrientation = flatOrientation(forward: line.forward, up: line.up)
         return node
     }
 
@@ -196,8 +231,8 @@ enum TrackWorld {
         for slot in track.gridSlots() {
             let up = simd_normalize(simd_cross(slot.right, slot.forward))
             let box = template.clone()
-            box.simdPosition = slot.position + up * 0.04
-            box.simdOrientation = orientation(forward: slot.forward, up: up)
+            box.simdPosition = slot.position + up * 0.03
+            box.simdOrientation = flatOrientation(forward: slot.forward, up: up)
             parent.addChildNode(box)
         }
         return parent
@@ -240,12 +275,25 @@ enum TrackWorld {
     // MARK: Helpers
 
     /// Quaternion that maps local -Z (SCN front) to `forward` and local +Y to `up`.
+    /// Use for upright objects (cars): their "up" stays vertical.
     static func orientation(forward: SIMD3<Float>, up: SIMD3<Float>) -> simd_quatf {
         let f = simd_normalize(forward)
         let u = simd_normalize(up)
         let r = simd_normalize(simd_cross(u, -f))   // local +X
         let u2 = simd_cross(-f, r)
         let m = simd_float3x3(columns: (r, u2, -f))
+        return simd_quatf(m)
+    }
+
+    /// Quaternion that lays a flat `SCNPlane` onto the road surface: the plane's
+    /// normal (local +Z) points along `up`, its width (local +X) along `right`,
+    /// and its height (local +Y) along `forward`. Use for ground markings
+    /// (start/finish line, grid boxes) so they paint flat instead of standing up.
+    static func flatOrientation(forward: SIMD3<Float>, up: SIMD3<Float>) -> simd_quatf {
+        let f = simd_normalize(forward)
+        let u = simd_normalize(up)
+        let r = simd_normalize(simd_cross(f, u))    // local +X (right)
+        let m = simd_float3x3(columns: (r, f, u))
         return simd_quatf(m)
     }
 

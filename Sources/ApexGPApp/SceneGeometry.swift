@@ -28,15 +28,21 @@ enum SceneGeometry {
 
     static func roadMaterial() -> SCNMaterial {
         let m = SCNMaterial()
-        m.diffuse.contents = NSColor(white: 0.16, alpha: 1)
-        m.roughness.contents = NSColor(white: 0.85, alpha: 1)
+        m.diffuse.contents = NSColor.black
+        // Keep it reading as black: ambient/specular/environment light otherwise
+        // lift a dark diffuse to a washed-out blue-grey under the sky lighting.
+        m.ambient.contents = NSColor.black
+        m.specular.contents = NSColor.black
+        m.metalness.contents = NSColor.black
+        m.roughness.contents = NSColor.white
         m.isDoubleSided = false
         return m
     }
 
+    // Ground around the circuit — everything that isn't track is green grass.
     static func grassMaterial() -> SCNMaterial {
         let m = SCNMaterial()
-        m.diffuse.contents = NSColor(red: 0.20, green: 0.42, blue: 0.16, alpha: 1)
+        m.diffuse.contents = NSColor(red: 0.24, green: 0.46, blue: 0.18, alpha: 1)
         m.roughness.contents = NSColor(white: 1, alpha: 1)
         return m
     }

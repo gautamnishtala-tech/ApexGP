@@ -276,7 +276,7 @@ public struct Track: Sendable {
     /// The default 20 slots occupy ~`firstSlotGap + 19 * slotSpacing` meters
     /// of road — keep the start/finish straight at least that long.
     public func gridSlots(count: Int = 20,
-                          firstSlotGap: Float = 8,
+                          firstSlotGap: Float = 20,
                           slotSpacing: Float = 5) -> [GridSlot] {
         precondition(count > 0 && firstSlotGap > 0 && slotSpacing > 0)
         return (0..<count).map { i in
