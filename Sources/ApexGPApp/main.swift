@@ -3,16 +3,19 @@ import SceneKit
 import ApexGPCore
 import simd
 
-// Phase 1: Falcon Ridge. Opens a SceneKit window showing the full circuit —
-// asphalt ribbon, kerbs, grass, barriers, start/finish line, grid boxes — with
-// a camera rig (chase / cockpit / TV / free) cycled with the C key, sky + fog
-// atmosphere, and a dummy centerline runner for TV cameras to track.
+// Phase 2: Falcon Ridge, now drivable. Opens a SceneKit window showing the full
+// circuit and a physics-driven player F1 car spawned on pole. A render-loop
+// driver steps the fixed-step vehicle sim from keyboard/gamepad input, the
+// camera rig (chase / cockpit / TV / free, C key) follows the real car, and a
+// SpriteKit HUD shows live telemetry.
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private var rig: CameraRig!
-    private var runner: CenterlineRunner!
+    private var driver: PhysicsDriver!
+    private var input: InputController!
+    private var hud: HUD!
     private var keyMonitor: Any?
 
     private let track = Track.falconRidge()
@@ -24,17 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // World.
         scene.rootNode.addChildNode(TrackWorld.build(for: track))
 
-        // Placeholder car parked on pole (grid slot 0).
-        let car = Self.placeholderCar()
-        let pole = track.gridSlots()[0]
-        let poleUp = simd_normalize(simd_cross(pole.right, pole.forward))
-        car.simdPosition = pole.position
-        car.simdOrientation = TrackWorld.orientation(forward: pole.forward, up: poleUp)
-        scene.rootNode.addChildNode(car)
-
-        // Dummy centerline runner (Phase 1 scaffolding) + render loop.
-        runner = CenterlineRunner(track: track, speed: 50)
-        scene.rootNode.addChildNode(runner.node)
+        // Player car (physics-driven). The driver seats it on the grid.
+        let car = PlayerCar()
+        scene.rootNode.addChildNode(car.node)
 
         // Lighting.
         addLighting(scene)
@@ -44,12 +39,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.scene = scene
         view.showsStatistics = true
         view.backgroundColor = .black
-        view.delegate = runner
         view.isPlaying = true                 // drive the render loop continuously
         view.rendersContinuously = true
 
-        // Camera rig — TV cams track the runner.
-        rig = CameraRig(view: view, car: car, track: track, target: runner.node)
+        // Input + HUD + render-loop driver.
+        input = InputController()
+        hud = HUD(size: view.bounds.size)
+        view.overlaySKScene = hud.scene
+        driver = PhysicsDriver(car: car, hud: hud, input: input, track: track)
+        view.delegate = driver
+
+        // Camera rig — chase/cockpit are car-parented; TV cams track the car.
+        rig = CameraRig(view: view, car: car.node, track: track, target: car.node)
         rig.installTVCams(in: scene.rootNode)
 
         // Window.
@@ -119,47 +120,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Input
 
+    // Handles: camera keys (C/V), gearbox mode toggle (G), HUD toggle (H),
+    // reset (R), and held driving keys (WASD/arrows, E/Q gears, F DRS) which are
+    // forwarded to the InputController for the render loop to poll.
     private func installKeyHandling() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self else { return event }
-            switch event.charactersIgnoringModifiers?.lowercased() {
-            case "c":
-                self.rig.cycle()
-                self.updateTitle()
-                return nil
-            case "v":
-                self.rig.nextTVCam()
-                self.updateTitle()
-                return nil
-            default:
+            // Let system shortcuts (Cmd+Q, Cmd+W, …) through untouched.
+            if event.modifierFlags.intersection([.command, .control]).isEmpty == false {
                 return event
             }
+            let code = event.keyCode
+
+            if event.type == .keyUp {
+                self.input.keyUp(code)
+                return nil
+            }
+
+            // keyDown. Discrete actions first, then held-key tracking.
+            if !event.isARepeat {
+                switch code {
+                case 8:   self.rig.cycle();  self.updateTitle();  return nil   // C
+                case 9:   self.rig.nextTVCam(); self.updateTitle(); return nil // V
+                case 5:   self.input.toggleGearbox(); return nil               // G
+                case 4:   self.hud.isVisible.toggle(); return nil              // H
+                case 15:  self.driver.requestReset(); return nil               // R
+                default: break
+                }
+            }
+            self.input.keyDown(code)
+            return nil
         }
     }
 
     private func updateTitle() {
         let cam = rig?.mode.label ?? "Chase"
-        window.title = "ApexGP — Phase 1: Falcon Ridge   |   Cam: \(cam)   "
-            + "(C: cycle camera, V: next TV cam, drag/scroll in Free cam)"
-    }
-
-    // MARK: Placeholder car (box + wheels stand-in)
-
-    static func placeholderCar() -> SCNNode {
-        let car = SCNNode()
-        car.name = "playerCar"
-        let body = SCNNode(geometry: SCNBox(width: 1.9, height: 0.6, length: 4.5, chamferRadius: 0.15))
-        body.geometry!.firstMaterial!.diffuse.contents = NSColor.systemRed
-        body.position = SCNVector3(0, 0.5, 0)
-        car.addChildNode(body)
-        for (x, z): (Float, Float) in [(-0.95, -1.5), (0.95, -1.5), (-0.95, 1.5), (0.95, 1.5)] {
-            let wheel = SCNNode(geometry: SCNCylinder(radius: 0.33, height: 0.35))
-            wheel.geometry!.firstMaterial!.diffuse.contents = NSColor.black
-            wheel.eulerAngles.z = .pi / 2
-            wheel.position = SCNVector3(x, 0.33, z)
-            car.addChildNode(wheel)
-        }
-        return car
+        window.title = "ApexGP — Phase 2: Falcon Ridge   |   Cam: \(cam)   "
+            + "(WASD/Arrows drive, C/V camera, F DRS, G gearbox, H HUD, R reset)"
     }
 }
 
