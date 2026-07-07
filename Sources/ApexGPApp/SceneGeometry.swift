@@ -28,14 +28,17 @@ enum SceneGeometry {
 
     static func roadMaterial() -> SCNMaterial {
         let m = SCNMaterial()
-        m.diffuse.contents = NSColor.black
-        // Keep it reading as black: ambient/specular/environment light otherwise
-        // lift a dark diffuse to a washed-out blue-grey under the sky lighting.
-        m.ambient.contents = NSColor.black
-        m.specular.contents = NSColor.black
+        // Dark asphalt grey — reads as near-black but stays visible under the
+        // sky/ambient lighting. Pure black rendered as an unlit void that
+        // blended into shadow and looked "missing", so keep a little diffuse.
+        m.diffuse.contents = NSColor(white: 0.85, alpha: 1)
+        m.specular.contents = NSColor(white: 0.18, alpha: 1)
         m.metalness.contents = NSColor.black
         m.roughness.contents = NSColor.white
-        m.isDoubleSided = false
+        // The road ribbon's top face is wound as a backface, so a single-sided
+        // material culls it when viewed from above (the magenta probe only
+        // showed because it was double-sided). Render both sides.
+        m.isDoubleSided = true
         return m
     }
 

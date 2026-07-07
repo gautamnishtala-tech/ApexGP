@@ -10,6 +10,15 @@ public struct VehicleConfig: Sendable {
     public var mass: Float = 800
     /// Yaw moment of inertia about the vertical axis (kg·m²).
     public var yawInertia: Float = 1000
+    /// Arcade yaw-stability assist (N·m per rad/s of EXCESS yaw rate). A restoring
+    /// yaw moment is applied only when the car rotates FASTER than the kinematic
+    /// reference implied by steer + forward speed (v·δ/wheelbase) — i.e. only when
+    /// it is over-rotating / spinning. It never adds understeer to a car that is
+    /// cornering normally (which sits at or below that reference), so it removes
+    /// the snap-spin "ice" feel without deadening turn-in. Set 0 for a pure
+    /// bicycle model. This is the key knob that makes the velocity vector follow
+    /// the heading instead of the tail stepping out uncatchably.
+    public var yawStability: Float = 11000
     /// Wheelbase, front axle to rear axle (m).
     public var wheelbase: Float = 3.6
     /// Track width, left wheel to right wheel (m).
@@ -31,8 +40,11 @@ public struct VehicleConfig: Sendable {
     public var slipSpeedFloor: Float = 2.5
 
     // MARK: Steering
-    /// Maximum front road-wheel steer angle at full lock (rad, ≈16°).
-    public var maxSteerAngle: Float = 0.28
+    /// Maximum front road-wheel steer angle at full lock (rad, ≈14°). Trimmed
+    /// from 0.28 so full stick/keyboard steer no longer drives the front tire
+    /// far past its peak slip angle — the car turns in cleanly instead of
+    /// darting and washing the front, which reads as a more planted feel.
+    public var maxSteerAngle: Float = 0.25
 
     // MARK: Aerodynamics
     /// Air density (kg/m³).
@@ -67,9 +79,12 @@ public struct VehicleConfig: Sendable {
     public var engineBrakingTorque: Float = 90
 
     // MARK: Brakes
-    /// Maximum total brake force the pedal can command (N). Deliberately larger
-    /// than available grip so braking is grip/lockup limited, not pedal limited.
-    public var maxBrakeForce: Float = 45000
+    /// Maximum total brake force the pedal can command (N). Sized so that at
+    /// high speed (huge aero load) braking is pedal-limited — which keeps the
+    /// 300→0 distance in the realistic F1 window now that mechanical grip is
+    /// higher — while at low speed, where grip falls below this, braking becomes
+    /// grip/lockup limited so the wheels can still be locked and caught.
+    public var maxBrakeForce: Float = 17500
     /// Fraction of brake force to the FRONT axle (brake bias).
     public var brakeBias: Float = 0.58
     /// Rolling resistance coefficient (× vertical load, opposes motion).

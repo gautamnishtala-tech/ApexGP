@@ -97,9 +97,14 @@ extension Track {
             (-215,  0,   0, 14, 0, .asphalt),       // 27 onto S/F straight
             (-110,  0,   0, 14, 0, .asphalt),       // 28 grid zone
         ]
+        // Widen the whole circuit uniformly for a roomier, more forgiving track,
+        // then add the former barrier run-off (3 m per side) into the drivable
+        // width so the road reaches the walls and the car can use it.
+        let widthScale: Float = 1.4
+        let runoffPerSide: Float = 3.0
         let points = raw.map { x, y, z, width, bankDeg, surface in
             TrackControlPoint(position: SIMD3(x * k, y, z * k),
-                              width: width,
+                              width: width * widthScale + 2 * runoffPerSide,
                               banking: bankDeg * .pi / 180,
                               surface: surface)
         }

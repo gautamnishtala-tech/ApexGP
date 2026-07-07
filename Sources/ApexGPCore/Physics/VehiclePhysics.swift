@@ -160,8 +160,17 @@ public final class VehiclePhysics {
         if throttle > 0.02 {
             crankTorque = c.engineTorque(rpm: rpm) * throttle
         } else {
-            // Engine braking on a closed throttle, scaled by rpm.
-            crankTorque = -c.engineBrakingTorque * simd_clamp(rpm / c.redlineRPM, 0, 1)
+            // Engine braking on a closed throttle: a purely RESISTIVE torque that
+            // may only ever OPPOSE forward motion. It is faded out as forward
+            // speed approaches zero so it vanishes at rest. Without this fade the
+            // idle-clamped rpm (`engineRPM` floors rpm at `idleRPM` even at v=0)
+            // produced a constant negative crank torque, i.e. a steady BACKWARD
+            // drive force that accelerated a stopped car into reverse. Fading it
+            // in with speed means it can only decelerate, never reverse the car
+            // through zero.
+            let brakingFade = simd_clamp(vx / c.slipSpeedFloor, 0, 1)
+            crankTorque = -c.engineBrakingTorque
+                * simd_clamp(rpm / c.redlineRPM, 0, 1) * brakingFade
         }
         let gearRatio = c.gearRatios[state.gear - 1]
         let driveForceDemand = crankTorque * gearRatio * c.finalDrive
@@ -202,13 +211,30 @@ public final class VehiclePhysics {
         // Body-frame total forces.
         var fxBody = fxRear + fxFront * cosD - fyFront * sinD
         let fyBody = fyRear + fyFront * cosD + fxFront * sinD
-        // Resistances always oppose forward travel.
-        fxBody -= dragForce * (vx < 0 ? -1 : 1)
+        // Resistances (drag + rolling) may only ever OPPOSE motion. Their sign is
+        // keyed off the sign of forward velocity — and is exactly zero at rest, so
+        // they can't push a stationary car backward — and their combined magnitude
+        // is capped to the force that would bring the car to a dead stop this step,
+        // so they can never accelerate it past zero into reverse.
         let rollForce = c.rollingResistance * (flLoad + frLoad + rlLoad + rrLoad)
-        fxBody -= rollForce * (vx < 0 ? -1 : 1)
+        let resistForce = dragForce + rollForce
+        let maxResistToRest = abs(vx) * m / dt
+        let appliedResist = min(resistForce, maxResistToRest)
+        let vxSign: Float = vx > 0 ? 1 : (vx < 0 ? -1 : 0)
+        fxBody -= appliedResist * vxSign
 
         // Yaw moment about CG.
-        let mz = c.a * (fyFront * cosD + fxFront * sinD) - c.b * fyRear
+        var mz = c.a * (fyFront * cosD + fxFront * sinD) - c.b * fyRear
+        // Arcade anti-spin yaw damping: compare the actual yaw rate with the
+        // kinematic reference the driver's steer is asking for at this forward
+        // speed. Only damp EXCESS rotation (over-rotating / spinning) so we never
+        // fight normal steady cornering — the car carves at the reference and the
+        // assist only fires when the tail tries to overtake it.
+        let refYawRate = delta * max(vx, 0) / c.wheelbase
+        let yawExcess = yawRate - refYawRate
+        if yawExcess * yawRate > 0 {
+            mz -= c.yawStability * yawExcess
+        }
 
         // --- Semi-implicit integration in the body frame ---
         let ax = fxBody / m
@@ -217,8 +243,10 @@ public final class VehiclePhysics {
         vy += (ay - vx * yawRate) * dt
         yawRate += (mz / c.yawInertia) * dt
 
-        // Stop micro-creep when stationary with no drive.
-        if abs(vx) < 0.05 && abs(driveForceDemand) < 1 && brake > 0.05 { vx = 0 }
+        // Snap to rest to kill micro-creep/jitter when nearly stopped with no
+        // forward drive demand — i.e. coasting or braking down to a standstill.
+        // (Under throttle we never snap, so launches are unaffected.)
+        if abs(vx) < 0.05 && throttle < 0.02 && driveForceDemand < 1 { vx = 0 }
         if abs(vx) < 1e-3 && abs(vy) < 1e-3 { yawRate *= 0.98 }
 
         lastAx = ax

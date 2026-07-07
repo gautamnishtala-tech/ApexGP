@@ -18,8 +18,7 @@ enum TrackWorld {
 
         root.addChildNode(grassNode(geo))
         root.addChildNode(roadNode(geo))
-        root.addChildNode(edgeLinesNode(geo))
-        if let kerbs = kerbsNode(geo) { root.addChildNode(kerbs) }
+        root.addChildNode(kerbsNode(geo))
         root.addChildNode(barriersNode(geo))
         root.addChildNode(startFinishNode(track))
         root.addChildNode(gridBoxesNode(track))
@@ -42,72 +41,46 @@ enum TrackWorld {
         return node
     }
 
-    // MARK: Lane edge lines
+    // MARK: Kerbs / track boundaries
 
-    /// Crisp white lines running just inside each road edge around the whole
-    /// lap — the marking that makes the grey track read as racing "lanes".
-    /// Two thin closed strips, merged into one geometry, lifted a hair above
-    /// the asphalt so they never z-fight the road.
-    private static func edgeLinesNode(_ geo: TrackGeometry) -> SCNNode {
-        let lineWidth: Float = 0.18
-        let lift: Float = 0.015
-        var leftOuter: [SIMD3<Float>] = [], leftInner: [SIMD3<Float>] = []
+    /// Red/white striped kerb ribbons running continuously along BOTH road
+    /// edges around the whole lap — the classic F1 boundary treatment that
+    /// delineates the track edge (replaces both the old thin edge lines and
+    /// the old corner-only kerbs). One closed-strip per side, merged into a
+    /// single geometry so the whole boundary is one draw call. Built from the
+    /// banked `up`/`right` frame at every sample, so it follows the track's
+    /// elevation and banking and rides up the bridge with the road.
+    private static func kerbsNode(_ geo: TrackGeometry) -> SCNNode {
+        let kerbWidth: Float = 1.6
+        let lift: Float = 0.02
+        // The kerb texture packs 8 red/white bands across one U-repeat, so a
+        // band spans 1 / (8 * uStripe) metres along the track. uStripe = 0.25
+        // ⇒ ~0.5 m bands — F1-sized, neither smeared nor too dense over a
+        // multi-kilometre lap (the old 0.7 only suited short corner runs).
+        let uStripe: Float = 0.25
+
+        var leftInner: [SIMD3<Float>] = [], leftOuter: [SIMD3<Float>] = []
         var rightInner: [SIMD3<Float>] = [], rightOuter: [SIMD3<Float>] = []
         var up: [SIMD3<Float>] = []
         for sample in geo.samples {
             let u = sample.up
             up.append(u)
-            // Left line hugs the left edge and runs inward toward the centerline.
+            // Kerbs now sit against the walls (which are at the road edge), on
+            // the road side — spanning inward (toward centre) from each edge.
+            // Left edge kerb: from the road edge inward (+right, toward centre).
+            leftInner.append(sample.leftEdge + sample.right * kerbWidth + u * lift)
             leftOuter.append(sample.leftEdge + u * lift)
-            leftInner.append(sample.leftEdge + sample.right * lineWidth + u * lift)
-            // Right line hugs the right edge and runs inward (-right).
-            rightInner.append(sample.rightEdge - sample.right * lineWidth + u * lift)
+            // Right edge kerb: from the road edge inward (-right, toward centre).
+            rightInner.append(sample.rightEdge - sample.right * kerbWidth + u * lift)
             rightOuter.append(sample.rightEdge + u * lift)
         }
+        // Inner rail (road side) is the first arg so triangles wind CCW-from-
+        // above with the up normal facing the sky, matching the old kerbs.
         var merged = MeshData()
-        merged.append(RibbonMesh.closedStrip(left: leftOuter, right: leftInner, up: up, uScale: 0))
-        merged.append(RibbonMesh.closedStrip(left: rightInner, right: rightOuter, up: up, uScale: 0))
-        let mat = SCNMaterial()
-        mat.diffuse.contents = NSColor.white
-        mat.isDoubleSided = true
-        let node = SCNNode(geometry: SceneGeometry.geometry(from: merged, material: mat))
-        node.name = "edgeLines"
-        node.castsShadow = false
-        return node
-    }
-
-    // MARK: Kerbs
-
-    /// Red/white kerb ribbons hugging the outside of each road edge on
-    /// `kerbAdjacent` stretches. One merged geometry for all kerb segments.
-    private static func kerbsNode(_ geo: TrackGeometry) -> SCNNode? {
-        let runs = geo.kerbRuns()
-        guard !runs.isEmpty else { return nil }
-        let s = geo.samples
-        let n = s.count
-        let kerbWidth: Float = 0.9
-        var merged = MeshData()
-
-        for run in runs {
-            // Build left and right kerb ribbons for this run, plus one station
-            // of overlap each side so adjacent asphalt meets the kerb cleanly.
-            var leftInner: [SIMD3<Float>] = [], leftOuter: [SIMD3<Float>] = []
-            var rightInner: [SIMD3<Float>] = [], rightOuter: [SIMD3<Float>] = []
-            var up: [SIMD3<Float>] = []
-            for k in 0...run.count {                 // inclusive to close the strip end
-                let idx = (run.start + k) % n
-                let sample = s[idx]
-                up.append(sample.up)
-                // Left edge kerb (outside = away from centerline = -right).
-                leftInner.append(sample.leftEdge + sample.up * 0.02)
-                leftOuter.append(sample.leftEdge - sample.right * kerbWidth + sample.up * 0.02)
-                // Right edge kerb (outside = +right).
-                rightInner.append(sample.rightEdge + sample.up * 0.02)
-                rightOuter.append(sample.rightEdge + sample.right * kerbWidth + sample.up * 0.02)
-            }
-            merged.append(openStrip(left: leftOuter, right: leftInner, up: up, uScale: 0.7))
-            merged.append(openStrip(left: rightInner, right: rightOuter, up: up, uScale: 0.7))
-        }
+        merged.append(RibbonMesh.closedStrip(left: leftOuter, right: leftInner,
+                                             up: up, uScale: uStripe))
+        merged.append(RibbonMesh.closedStrip(left: rightInner, right: rightOuter,
+                                             up: up, uScale: uStripe))
         let node = SCNNode(geometry: SceneGeometry.geometry(from: merged,
                                                            material: SceneGeometry.kerbMaterial()))
         node.name = "kerbs"

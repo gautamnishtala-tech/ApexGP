@@ -237,3 +237,142 @@ private func detectCorners(in track: Track, spacing: Float = 5,
         }
     }
 }
+
+// MARK: - surfaceFrame (ride the car on the real road)
+
+@Suite struct SurfaceFrameTests {
+    let track = Track.falconRidge()
+
+    @Test func flatStartReturnsGroundLevelAndVerticalNormal() {
+        // The start/finish line (control point 0) is authored at y=0, flat.
+        let f = track.surfaceFrame(nearX: 0, z: 0)
+        #expect(abs(f.elevation) < 0.5)          // sits at ground level
+        #expect(abs(simd_length(f.up) - 1) < 1e-4)  // unit normal
+        #expect(f.up.y > 0.99)                   // points essentially straight up
+        #expect(abs(simd_length(f.forward) - 1) < 1e-4)
+    }
+
+    @Test func elevatedRidgeReturnsClimbedElevation() {
+        // Control point 14 is the ridge top, authored at y=15 m. Query the
+        // road right underneath it and confirm the surface has risen with it.
+        let k: Float = 1.85
+        let ridge = SIMD3<Float>(-65 * k, 15, 465 * k)
+        let f = track.surfaceFrame(nearX: ridge.x, z: ridge.z)
+        #expect(f.elevation > 12)                // has climbed most of the 15 m
+        #expect(abs(f.elevation - 15) < 2.0)     // and lands near the authored height
+        #expect(abs(simd_length(f.up) - 1) < 1e-4)
+        #expect(f.up.y > 0.5)                    // still generally upward
+    }
+
+    @Test func nearestPointMatchesTheUnderlyingSample() {
+        // Sampling the centerline directly and then querying at that exact
+        // X–Z must recover the same elevation (nearest point is that point).
+        for d: Float in stride(from: 0, to: track.length, by: 37).map({ $0 }) {
+            let s = track.sample(atDistance: d)
+            let f = track.surfaceFrame(nearX: s.position.x, z: s.position.z)
+            #expect(abs(f.elevation - s.position.y) < 0.6, "mismatch at d=\(d)")
+        }
+    }
+
+    @Test func elevationVariesContinuouslyAlongTheLap() {
+        // Walk the query point along the centerline in ~2 m steps; the surface
+        // elevation must change smoothly (no popping between segments).
+        let step: Float = 2
+        var prev = track.surfaceFrame(nearX: track.sample(atDistance: 0).position.x,
+                                      z: track.sample(atDistance: 0).position.z).elevation
+        var d: Float = step
+        while d < track.length {
+            let p = track.sample(atDistance: d).position
+            let f = track.surfaceFrame(nearX: p.x, z: p.z)
+            #expect(abs(f.elevation - prev) < 1.0, "elevation jump near d=\(d)")
+            #expect(f.up.y > 0)   // normal stays in the upper hemisphere everywhere
+            prev = f.elevation
+            d += step
+        }
+    }
+
+    // MARK: windowed query — no cross-level snapping
+
+    /// A synthetic closed loop whose two long straights sit directly above each
+    /// other in plan view (x in [0, 90]) but 10 m apart in elevation: a lower
+    /// straight at y=0 (z≈0) and an upper straight at y=10 (z≈4), joined by
+    /// ramps. The two straights are far apart in arc length (~half a lap) yet
+    /// nearly coincident in X–Z — exactly the crossover that a global X–Z
+    /// search snaps through.
+    static func stackedLoop() -> Track {
+        let raw: [SIMD3<Float>] = [
+            SIMD3( 0, 0, 0), SIMD3(30, 0, 0), SIMD3(60, 0, 0), SIMD3(90, 0, 0), // lower
+            SIMD3(110, 5, 3),                                                    // ramp up
+            SIMD3(90, 10, 4), SIMD3(60, 10, 4), SIMD3(30, 10, 4), SIMD3(0, 10, 4), // upper
+            SIMD3(-20, 5, 2),                                                    // ramp down
+        ]
+        let pts = raw.map { TrackControlPoint(position: $0, width: 8) }
+        return Track(name: "Stacked Loop", points: pts,
+                     direction: .alongControlPoints)
+    }
+
+    /// The along-track distance of the nearest dense sample to a world point.
+    private func distanceNearest(_ track: Track, to p: SIMD3<Float>) -> Float {
+        track.samples(spacing: 1).min {
+            simd_distance($0.position, p) < simd_distance($1.position, p)
+        }!.distance
+    }
+
+    @Test func windowedQueryStaysOnTheCarsOwnLevel() {
+        let t = SurfaceFrameTests.stackedLoop()
+        // A query point midway (in z) between the two stacked straights.
+        let x: Float = 45, z: Float = 2
+        // Arc lengths of each level near x=45.
+        let sLow = distanceNearest(t, to: SIMD3(x, 0, 0))
+        let sHigh = distanceNearest(t, to: SIMD3(x, 10, 4))
+        #expect(abs(sLow - sHigh) > 60)   // genuinely far apart in arc length
+
+        // Seeded near the lower level -> lower elevation; near the upper -> upper.
+        let low = t.surfaceFrame(nearX: x, z: z, aroundDistance: sLow, window: 25)
+        let high = t.surfaceFrame(nearX: x, z: z, aroundDistance: sHigh, window: 25)
+        #expect(low.elevation < 3, "windowed-low snapped up: \(low.elevation)")
+        #expect(high.elevation > 7, "windowed-high snapped down: \(high.elevation)")
+        #expect(high.elevation - low.elevation > 5)   // the levels are resolved
+    }
+
+    @Test func globalFallbackRecoversWhenSeedIsFarFromCar() {
+        // A bogus seed far from the car, with a small window, must fall back to
+        // a global search rather than return a wildly wrong frame.
+        let t = SurfaceFrameTests.stackedLoop()
+        let x: Float = 45, z: Float = 0            // sitting on the lower straight
+        // Seed at the up-ramp corner (~x=110): >50 m away in X–Z from the car,
+        // so with a small window the whole band is far and the fallback engages.
+        let bogus = distanceNearest(t, to: SIMD3(110, 5, 3))
+        let f = t.surfaceFrame(nearX: x, z: z, aroundDistance: bogus, window: 5)
+        #expect(f.elevation < 3, "fallback did not recover the real (lower) level")
+    }
+
+    // MARK: lateral + banking height
+
+    @Test func bankedSampleRaisesTowardTheOuterEdge() {
+        // On a banked section the surface height at the outer (raised) edge must
+        // exceed the centerline height, matching centerline.y + right.y * L.
+        // Falcon Ridge point 10 (T4 apex) is banked; positive banking raises the
+        // right edge.
+        let sample = track.samples(spacing: 2).first { $0.banking > 0.05 }!
+        let center = sample.position
+        let rightXZ = simd_normalize(SIMD2(sample.right.x, sample.right.z))
+        let L: Float = 10
+        let edge = SIMD2(center.x, center.z) + rightXZ * L
+
+        let atCenter = track.surfaceFrame(nearX: center.x, z: center.z,
+                                          aroundDistance: sample.distance, window: 20)
+        let atEdge = track.surfaceFrame(nearX: edge.x, z: edge.y,
+                                        aroundDistance: sample.distance, window: 20)
+
+        // Center query sits at (near) the centerline elevation.
+        #expect(abs(atCenter.elevation - center.y) < 0.3)
+        // Edge query is meaningfully higher, matching right.y * L.
+        let expectedRise = sample.right.y * L
+        #expect(expectedRise > 0.5)
+        #expect(atEdge.elevation > atCenter.elevation + 0.4,
+                "edge (\(atEdge.elevation)) not above center (\(atCenter.elevation))")
+        #expect(abs((atEdge.elevation - center.y) - expectedRise) < 0.35,
+                "edge rise \(atEdge.elevation - center.y) != expected \(expectedRise)")
+    }
+}

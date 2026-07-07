@@ -256,6 +256,121 @@ public struct Track: Sendable {
                            surface: here.surface)
     }
 
+    /// The road-surface frame nearest to a world-space X–Z position: the
+    /// surface **elevation** (Y) the car should sit on, the banked surface
+    /// **normal** (`up`), and the travel-direction **tangent** (`forward`) at
+    /// the closest point on the centerline. Seat a planar-simulated car onto
+    /// this frame so it climbs elevation and leans with banking instead of
+    /// staying flat at its spawn height.
+    ///
+    /// Implementation: a nearest-point-on-centerline scan over the dense
+    /// polyline (O(segments) — fine for one car), reusing the same
+    /// closest-point-on-segment projection the barriers use. The frame itself
+    /// comes from `sample(atDistance:)` at the interpolated arc length of that
+    /// nearest point, so elevation/normal/forward vary **continuously** as the
+    /// query point moves — no popping when the nearest segment changes.
+    ///
+    /// This global overload searches the whole centerline in X–Z. Where the
+    /// circuit passes near itself in plan view at different heights (a bridge /
+    /// crossover, or a tight switchback), that can snap onto the WRONG level.
+    /// A moving car should use `surfaceFrame(nearX:z:aroundDistance:window:)`
+    /// with the previous frame's along-track distance to stay on its own level;
+    /// use this global form only for the first query / after a reset.
+    public func surfaceFrame(nearX x: Float, z: Float)
+        -> (elevation: Float, up: SIMD3<Float>, forward: SIMD3<Float>) {
+        let r = surfaceFrame(nearX: x, z: z, aroundDistance: nil, window: 0)
+        return (elevation: r.elevation, up: r.up, forward: r.forward)
+    }
+
+    /// The road-surface frame nearest to a world-space X–Z position, restricted
+    /// to the stretch of centerline near a known along-track arc length so a
+    /// moving car never snaps to a different level of a crossover.
+    ///
+    /// - Parameters:
+    ///   - x, z: the car's world-space plan-view position.
+    ///   - around: the previous frame's returned `distance` (lap arc length in
+    ///     meters). Pass `nil` to search the whole centerline globally (first
+    ///     frame / after reset).
+    ///   - window: half-width, in meters of arc length, of the search band
+    ///     centered on `around` (lap wrap is handled). Make it generous enough
+    ///     for one frame's travel at top speed (≥ a few car lengths, e.g.
+    ///     40–60 m) yet small enough to exclude the other side of a crossover.
+    ///
+    /// - Returns: the corrected surface `elevation` at the car's actual X–Z on
+    ///   the local banked cross-section (not the raw centerline height), the
+    ///   banked surface `up` normal, the travel-direction `forward`, and the
+    ///   chosen arc-length `distance` (feed this back as `around` next frame).
+    ///
+    /// If the windowed band turns up no point within `window` meters of the car
+    /// (e.g. a teleport / far off-track), it falls back to a global search so a
+    /// valid frame is always returned.
+    public func surfaceFrame(nearX x: Float, z: Float,
+                             aroundDistance around: Float?, window: Float)
+        -> (elevation: Float, up: SIMD3<Float>, forward: SIMD3<Float>, distance: Float) {
+        var hit = nearestOnCenterline(x: x, z: z, around: around, window: window)
+        // Global fallback: the windowed band didn't contain the car (teleport,
+        // off-track, or a bogus seed). Re-scan the whole centerline so we still
+        // return a sane frame rather than a distant windowed one.
+        if around != nil && hit.dist2 > window * window {
+            hit = nearestOnCenterline(x: x, z: z, around: nil, window: 0)
+        }
+        let frame = sample(atDistance: hit.s)
+        // Lateral + banking correction. `frame.right` is the banked cross-section
+        // direction (`position ± right*width/2` are the true 3D edges), so the
+        // surface height at lateral offset L from the centerline is
+        // `centerline.y + right.y * L`, where L is the car's signed distance from
+        // the centerline along the (horizontal) right direction. This seats the
+        // car on the real banked / edge surface, not the centerline height.
+        let centerlineXZ = SIMD2(frame.position.x, frame.position.z)
+        let rightXZ = SIMD2(frame.right.x, frame.right.z)
+        let rLen = simd_length(rightXZ)
+        var elevation = frame.position.y
+        if rLen > 1e-6 {
+            let lateral = simd_dot(SIMD2(x, z) - centerlineXZ, rightXZ / rLen)
+            elevation += frame.right.y * lateral
+        }
+        return (elevation: elevation, up: frame.up, forward: frame.forward,
+                distance: hit.s)
+    }
+
+    /// Nearest point on the dense centerline polyline to `(x, z)` in plan view.
+    /// When `around` is non-nil, only segments whose start arc length is within
+    /// `window` meters (lap-wrapped) of `around` are considered. Returns the
+    /// interpolated arc length `s` of the closest point and its squared X–Z
+    /// distance to the query (used to trigger the global fallback).
+    private func nearestOnCenterline(x: Float, z: Float,
+                                     around: Float?, window: Float)
+        -> (s: Float, dist2: Float) {
+        let q = SIMD2<Float>(x, z)
+        let n = dense.count
+        var bestDist2 = Float.greatestFiniteMagnitude
+        var bestS: Float = 0
+        for i in 0..<n {
+            let a = dense[i]
+            if let target = around, arcDelta(a.s, target) > window { continue }
+            let b = dense[(i + 1) % n]
+            let aXZ = SIMD2(a.position.x, a.position.z)
+            let bXZ = SIMD2(b.position.x, b.position.z)
+            let segEnd = (i + 1 == n) ? length : b.s
+            let ab = bXZ - aXZ
+            let denom = simd_dot(ab, ab)
+            let t = denom > 1e-9 ? simd_clamp(simd_dot(q - aXZ, ab) / denom, 0, 1) : 0
+            let closest = aXZ + ab * t
+            let d2 = simd_length_squared(q - closest)
+            if d2 < bestDist2 {
+                bestDist2 = d2
+                bestS = a.s + (segEnd - a.s) * t
+            }
+        }
+        return (s: bestS, dist2: bestDist2)
+    }
+
+    /// Shortest lap-wrapped arc-length distance between two distances.
+    private func arcDelta(_ a: Float, _ b: Float) -> Float {
+        let raw = abs(a - b).truncatingRemainder(dividingBy: length)
+        return min(raw, length - raw)
+    }
+
     /// Sector index (0, 1, or 2) containing the given lap distance.
     public func sector(atDistance distance: Float) -> Int {
         let s = wrap(distance)

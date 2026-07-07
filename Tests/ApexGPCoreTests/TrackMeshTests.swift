@@ -55,16 +55,19 @@ import simd
         #expect(geo.minElevation <= 0.1)
     }
 
-    @Test func barriersSitOutsideTheRoadEdges() {
+    @Test func barriersSitAtOrOutsideTheRoadEdges() {
         let geo = TrackGeometry(track: track, spacing: 6)
         for i in 0..<geo.samples.count {
             let s = geo.samples[i]
             let center = s.position
-            // Inner barrier rails are farther from centerline than road edges.
-            #expect(simd_distance(geo.barrierLeftInner[i], center) >
-                    simd_distance(s.leftEdge, center))
-            #expect(simd_distance(geo.barrierRightInner[i], center) >
-                    simd_distance(s.rightEdge, center))
+            // The run-off was folded into the drivable width, so the barrier
+            // rails now sit AT the road edge (never inside it) — the road
+            // reaches the wall and the wall coincides with the physics edge.
+            let eps: Float = 0.001
+            #expect(simd_distance(geo.barrierLeftInner[i], center) >=
+                    simd_distance(s.leftEdge, center) - eps)
+            #expect(simd_distance(geo.barrierRightInner[i], center) >=
+                    simd_distance(s.rightEdge, center) - eps)
         }
     }
 

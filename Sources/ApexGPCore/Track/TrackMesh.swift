@@ -118,10 +118,16 @@ public struct TrackGeometry: Sendable {
         self.roadLeft = s.map { $0.leftEdge + $0.up * lift }
         self.roadRight = s.map { $0.rightEdge + $0.up * lift }
         self.roadUp = s.map { $0.up }
-        self.minElevation = s.map { $0.position.y }.min() ?? 0
+        // Lowest point of the actual road *surface*, i.e. the road edges — on a
+        // wide, banked section the lower edge sits well below the centerline, so
+        // the grass plane must go beneath the lowest edge (not just the lowest
+        // centerline) or it pokes up through the road on those banked stretches.
+        self.minElevation = s.flatMap { [$0.leftEdge.y, $0.rightEdge.y] }.min() ?? 0
 
-        // Barriers: a couple of meters of clearance outside each edge.
-        let clearance: Float = 3.0
+        // Barriers now sit right at the road edge (the run-off was folded into
+        // the drivable width), so the wall coincides with the physics edge and
+        // the road reaches it — no unreachable grass strip in between.
+        let clearance: Float = 0.0
         self.barrierLeftInner = s.map { $0.leftEdge - $0.right * clearance }
         self.barrierRightInner = s.map { $0.rightEdge + $0.right * clearance }
     }

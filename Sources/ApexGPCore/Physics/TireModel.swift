@@ -17,22 +17,37 @@ import simd
 ///
 /// Pure math, no state, deterministic — safe for the fixed-timestep sim.
 public struct TireModel: Sendable {
-    // Lateral (cornering) coefficients. Peak near ~7.5° slip angle.
-    public var lateralB: Float = 38.0
+    // Lateral (cornering) coefficients. B is dropped hard (32→14) to move the
+    // grip peak out to ~12° slip and greatly WIDEN the plateau: the tire now
+    // holds near-peak force across a broad band of slip angles instead of
+    // peaking at ~6° and washing out right after. This is the single biggest
+    // "planted" lever — turn-in and mid-corner stay on the grip shelf instead of
+    // sliding off it. E is trimmed (0.9→0.72) only enough to keep a clear
+    // post-peak falloff so the limit is still progressive and catchable.
+    public var lateralB: Float = 14.0
     public var lateralC: Float = 1.5
-    public var lateralE: Float = 0.9
+    public var lateralE: Float = 0.72
 
     // Longitudinal (drive/brake) coefficients. Peak near ~0.12 slip ratio.
     public var longitudinalB: Float = 16.0
     public var longitudinalC: Float = 1.65
     public var longitudinalE: Float = 0.6
 
-    /// Peak grip coefficient at the reference load (slick tire ≈ 1.5–1.8).
-    public var mu: Float = 1.55
+    /// Peak grip coefficient at the reference load. Pushed WELL past a realistic
+    /// slick (~1.5–1.8) up to 2.5 on purpose: this is a deliberately arcade-grippy
+    /// car. Two timid +5–10% bumps failed to fix the "slippy/ice" complaint, so
+    /// this is a big, decisive step — it raises mechanical grip ~50% at every
+    /// speed, most importantly at low/normal speed before aero downforce helps,
+    /// so the car feels planted and secure in normal driving. It can still slide
+    /// at the very limit (the tire curve still peaks then falls off).
+    public var mu: Float = 2.5
     /// Reference vertical load per tire for the load-sensitivity curve (N).
     public var referenceLoad: Float = 2500
-    /// Fractional grip loss per unit of `(load/referenceLoad − 1)`.
-    public var loadSensitivity: Float = 0.10
+    /// Fractional grip loss per unit of `(load/referenceLoad − 1)`. Halved
+    /// (0.08→0.04) so the heavily loaded outer tire keeps almost all its grip
+    /// mid-corner — this is what stops the car washing out / sliding wide in the
+    /// middle of a corner and keeps the velocity vector following the heading.
+    public var loadSensitivity: Float = 0.04
 
     public init() {}
 

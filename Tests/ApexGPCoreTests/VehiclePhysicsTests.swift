@@ -111,6 +111,45 @@ import simd
         #expect(p.telemetry.speed < before)
     }
 
+    @Test func zeroInputFromRestNeverRollsBackward() {
+        // Regression: with NO throttle and NO brake, a car at rest must stay put
+        // (or gently creep forward) — it must NEVER accelerate backward. The old
+        // idle-clamped engine-braking torque produced a constant reverse force
+        // that drove a stopped car into reverse. Simulate several seconds of pure
+        // idle and require the car never travels backward along its own heading.
+        let p = VehiclePhysics()
+        let forward = VehiclePhysics.forward(p.state.heading)
+        let idle = DriverInput()   // throttle 0, brake 0
+        for _ in 0..<(5 * 240) {
+            p.step(input: idle, dt: Self.dt)
+            // Forward velocity component never negative.
+            let vForward = simd_dot(p.state.velocity, forward)
+            #expect(vForward >= -1e-4)
+        }
+        // Net displacement along heading is not backward (allow a hair of noise).
+        let displacement = simd_dot(p.state.position, forward)
+        #expect(displacement >= -1e-3)
+        #expect(p.telemetry.speed < 0.1)   // essentially stationary
+    }
+
+    @Test func coastingFromLowSpeedSettlesAtRestWithoutReversing() {
+        // Starting with a small forward speed and zero throttle/zero brake, the
+        // car must decelerate toward zero and SETTLE at ~0 — never crossing into
+        // negative (reverse) motion as it passes through the standstill.
+        var s = VehicleState()
+        s.velocity = VehiclePhysics.forward(s.heading) * 5   // 5 m/s forward
+        let p = VehiclePhysics(initialState: s)
+        let forward = VehiclePhysics.forward(p.state.heading)
+        let idle = DriverInput()
+        var minForward: Float = .greatestFiniteMagnitude
+        for _ in 0..<(8 * 240) {
+            p.step(input: idle, dt: Self.dt)
+            minForward = min(minForward, simd_dot(p.state.velocity, forward))
+        }
+        #expect(minForward >= -1e-4)          // never reversed through zero
+        #expect(p.telemetry.speed < 0.1)      // came to rest
+    }
+
     // MARK: - Numeric stability
 
     @Test func energyStaysBoundedOverTenThousandSteps() {

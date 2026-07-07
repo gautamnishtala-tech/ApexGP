@@ -30,6 +30,7 @@ final class HUD {
         background.strokeColor = .clear
         background.path = CGPath(roundedRect: CGRect(x: 0, y: 0, width: 320, height: 210),
                                  cornerWidth: 10, cornerHeight: 10, transform: nil)
+        background.position = CGPoint(x: 0, y: 2)
         panel.addChild(background)
 
         let mono = "Menlo-Bold"
